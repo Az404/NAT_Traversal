@@ -6,6 +6,7 @@ from random import randrange
 from time import sleep
 
 import constants as const
+from nat_connection import NatConnection
 
 
 class TraversalError(Exception):
@@ -13,36 +14,47 @@ class TraversalError(Exception):
 
 
 class NATTraversalClient:
-    def __init__(self, server_ip, local_id):
-        self.local_id = local_id
+    def __init__(self, server_ip, local_id, remote_id):
         self.server_ip = server_ip
+        self.local_id = local_id
+        self.remote_id = remote_id
 
-    def connect(self, remote_id):
-        self.sock = socket.socket(type=socket.SOCK_DGRAM)
-        for _ in range(const.PUNCHING_PROBES):
-            self.sock.settimeout(const.TIMEOUT * randrange(25, 200) / 100)
-            remote_addr = self.get_remote_addr(remote_id)
-            print("Remote addr for {}: {}".format(remote_id, remote_addr))
-            if not remote_addr:
-                raise TraversalError("Can't get remote address from server")
-            print("Send hello packet to ", remote_addr)
-            self.sock.sendto(const.HELLO_PACKET, remote_addr)
-            print("Waiting for response at", self.sock.getsockname())
-            try:
-                while True:
-                    data, addr = self.sock.recvfrom(1024)
-                    if data == const.HELLO_PACKET and addr == remote_addr:
-                        return self.sock, addr
-            except socket.timeout:
-                print("No hello packet from remote")
-            except ConnectionError as e:
-                print("Connection error:", e)
-        else:
-            raise TraversalError("Connection failed: no any hello packet")
+    def connect(self):
+        while True:
+            self.sock = socket.socket(type=socket.SOCK_DGRAM)
+            for _ in range(const.PORT_PUNCHING_PROBES):
+                self.sock.settimeout(self._rand_timeout())
+                connection = self._try_punch_hole()
+                if connection:
+                    return connection
 
-    def server_request(self, remote_id):
-        request = "\n".join((const.COOKIE, self.local_id, remote_id))
-        for _ in range(const.PROBES):
+    def _try_punch_hole(self):
+        print("Waiting for remote addr from server...")
+        remote_addr = self._get_remote_addr()
+        print("Remote addr for {}: {}".format(self.remote_id, remote_addr))
+
+        connection = NatConnection(self.sock, remote_addr)
+        print("Send hello packet to ", remote_addr)
+        connection.send(const.HELLO_PACKET)
+        print("Waiting for response at", connection.sock.getsockname())
+        try:
+            while True:
+                data = connection.recv()
+                if data == const.HELLO_PACKET:
+                    print("Received hello packet!")
+                    return connection
+        except socket.timeout:
+            print("No hello packet from remote")
+        except ConnectionError as e:
+            print("Connection error:", e)
+
+    @staticmethod
+    def _rand_timeout():
+        return const.BASE_SOCKET_TIMEOUT * randrange(25, 200) / 100
+
+    def _server_request(self):
+        request = "\n".join((const.COOKIE, self.local_id, self.remote_id))
+        for _ in range(const.SERVER_REQUEST_PROBES):
             self.sock.sendto(request.encode(), (self.server_ip, const.PORT))
             try:
                 while True:
@@ -52,11 +64,13 @@ class NATTraversalClient:
                 return data
             except socket.timeout:
                 pass
+        else:
+            raise TraversalError("No response from traversal server")
 
-    def get_remote_addr(self, remote_id):
-        for _ in range(const.PROBES):
-            response = self.server_request(remote_id)
-            if response and len(response) == 6 and response != b"\0" * 6:
+    def _get_remote_addr(self):
+        while True:
+            response = self._server_request()
+            if len(response) == 6 and response != b"\0" * 6:
                 ip, port = struct.unpack("!4sH", response)
                 ip = socket.inet_ntoa(ip)
                 return ip, port
@@ -81,26 +95,29 @@ def get_args():
     return parser.parse_args()
 
 
+def send_and_recv(connection, string):
+    print("Send {} to remote...".format(string))
+    connection.send(string.encode())
+    try:
+        while True:
+            data = connection.recv()
+            print("Received {}".format(data.decode()))
+    except socket.timeout:
+        print("No data received")
+
+
 def main():
     args = get_args()
     print("MY ID:", args.id)
     print("REMOTE ID:", args.remote)
-    client = NATTraversalClient(args.server, args.id)
-    while True:
-        try:
-            sock, remote_addr = client.connect(args.remote)
-        except Exception as e:
-            print(e)
-        else:
-            break
+    client = NATTraversalClient(args.server, args.id, args.remote)
+    connection = client.connect()
     print("OK!")
-    sock.sendto(const.HELLO_PACKET, remote_addr)
-    try:
-        while True:
-            data, addr = sock.recvfrom(1024)
-            print("Received {} from {}".format(data, addr))
-    except socket.timeout:
-        print("No data received")
+    connection.keepalive_sender.start()
+    send_and_recv(connection, args.id)
+    while True:
+        msg = input("Message to send:")
+        send_and_recv(connection, msg)
 
 if __name__ == '__main__':
     main()
