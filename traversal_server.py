@@ -34,7 +34,7 @@ class NATTraversalServer:
             response = self._pack_addr(self.table[requested_id])
         else:
             print(" not found")
-            return b"\0" * 6
+            response = b"\0" * 6
         self.listener.sendto(response, addr)
 
     def _pack_addr(self, addr):
