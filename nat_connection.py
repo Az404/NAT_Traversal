@@ -7,19 +7,27 @@ class NatConnection:
         self.sock = sock
         self.remote_addr = remote_addr
         self.keepalive_sender = KeepaliveSender(sock, remote_addr)
-        self.keepalive_sender.start()
 
     def send(self, data):
-        self.sock.sendto(self._escape(data), self.remote_addr)
+        self.send_raw(self._escape(data))
+
+    def send_raw(self, data):
+        self.sock.sendto(data, self.remote_addr)
 
     def recv(self):
         while True:
-            data, addr = self.sock.recvfrom(8192)
-            if addr == self.remote_addr and data != const.KEEPALIVE_PACKET:
+            data = self.recv_raw()
+            if not data.startswith(const.COOKIE):
                 return self._unescape(data)
 
+    def recv_raw(self):
+        while True:
+            data, addr = self.sock.recvfrom(8192)
+            if addr == self.remote_addr:
+                return data
+
     def _escape(self, data):
-        if data == const.KEEPALIVE_PACKET or data.startswith(b"\\"):
+        if data.startswith(const.COOKIE) or data.startswith(b"\\"):
             data = b"\\" + data
         return data
 
@@ -35,7 +43,7 @@ class NatConnection:
 
 class KeepaliveSender(Timer):
     def __init__(self, sock, remote_addr):
-        super().__init__(self._send_keepalive, const.KEEPALIVE_SEND_TIME)
+        super().__init__(const.KEEPALIVE_SEND_TIME, self._send_keepalive)
         self.sock = sock
         self.remote_addr = remote_addr
 

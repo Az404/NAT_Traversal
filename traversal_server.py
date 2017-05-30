@@ -20,7 +20,7 @@ class NATTraversalServer:
     def process_client(self, addr, data):
         data = data.decode(errors="replace")
         lines = data.split("\n")
-        if len(lines) != 3 or lines[0] != const.COOKIE:
+        if len(lines) != 3 or lines[0] != const.COOKIE.decode():
             return
 
         remote_id, requested_id = lines[1:3]

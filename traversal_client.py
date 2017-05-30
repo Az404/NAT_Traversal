@@ -34,26 +34,35 @@ class NATTraversalClient:
         print("Remote addr for {}: {}".format(self.remote_id, remote_addr))
 
         connection = NatConnection(self.sock, remote_addr)
-        print("Send hello packet to ", remote_addr)
-        connection.send(const.HELLO_PACKET)
+        print("Send hello packets to ", remote_addr)
+        self._send_hello_packets(connection)
         print("Waiting for response at", connection.sock.getsockname())
         try:
             while True:
-                data = connection.recv()
+                data = connection.recv_raw()
                 if data == const.HELLO_PACKET:
                     print("Received hello packet!")
+                    self._send_hello_packets(connection)
                     return connection
         except socket.timeout:
             print("No hello packet from remote")
         except ConnectionError as e:
             print("Connection error:", e)
 
+    def _send_hello_packets(self, connection):
+        for _ in range(const.HELLO_PACKETS_COUNT):
+            connection.send(const.HELLO_PACKET)
+
     @staticmethod
     def _rand_timeout():
-        return const.BASE_SOCKET_TIMEOUT * randrange(25, 200) / 100
+        return const.BASE_SOCKET_TIMEOUT * randrange(
+            int(const.TIMEOUT_MULTIPLIER_RANGE[0] * 100),
+            int(const.TIMEOUT_MULTIPLIER_RANGE[1] * 100)
+        ) / 100
 
     def _server_request(self):
-        request = "\n".join((const.COOKIE, self.local_id, self.remote_id))
+        request = "\n".join(
+            (const.COOKIE.decode(), self.local_id, self.remote_id))
         for _ in range(const.SERVER_REQUEST_PROBES):
             self.sock.sendto(request.encode(), (self.server_ip, const.PORT))
             try:
