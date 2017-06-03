@@ -2,10 +2,11 @@ import argparse
 import socket
 import struct
 import uuid
-from random import randrange
 from time import sleep
 
 import constants as const
+from clientserver_connection import ClientServerConnection
+from enums import Operation, OperationResult
 from nat_connection import NatConnection
 
 
@@ -18,47 +19,75 @@ class NATTraversalClient:
         self.server_ip = server_ip
         self.local_id = local_id
         self.remote_id = remote_id
+        self.remote_addr = None
+        self.nat_connection = None
+        self._handlers = {
+            Operation.BIND: self._process_bind,
+            Operation.SEND_HELLO: self._process_send_hello,
+            Operation.WAIT_HELLO: self._process_wait_hello,
+            Operation.UPDATE_ADDR: self._process_update_addr
+        }
 
     def connect(self):
         while True:
-            self.sock = socket.socket(type=socket.SOCK_DGRAM)
-            for _ in range(const.PORT_PUNCHING_PROBES):
-                self.sock.settimeout(self._rand_timeout())
-                connection = self._try_punch_hole()
-                if connection:
-                    return connection
+            try:
+                server_connection = ClientServerConnection(
+                    socket.create_connection((self.server_ip, const.PORT)))
+                with server_connection:
+                    server_connection.writeline(self.local_id)
+                    server_connection.writeline(self.remote_id)
+                    while True:
+                        operation = server_connection.read_as_enum(Operation)
+                        if operation in self._handlers:
+                            result = self._handlers[operation]()
+                            server_connection.write_as_enum(
+                                OperationResult.OK if result
+                                else OperationResult.FAIL
+                            )
+                            if operation == Operation.WAIT_HELLO and result:
+                                return self.nat_connection
+                        else:
+                            print("Unknown operation from server")
+            except (socket.timeout, ConnectionError):
+                print("Connection attempt failed")
 
-    def _try_punch_hole(self):
+    def _process_bind(self):
+        self.sock = socket.socket(type=socket.SOCK_DGRAM)
+        self.sock.bind(("", 0))
+        print("Bind to {}".format(self.sock.getsockname()[0]))
+        self._update_connection()
+        return True
+
+    def _process_update_addr(self):
         print("Waiting for remote addr from server...")
-        remote_addr = self._get_remote_addr()
-        print("Remote addr for {}: {}".format(self.remote_id, remote_addr))
+        self.remote_addr = self._get_remote_addr()
+        print("Remote addr for {}: {}".format(self.remote_id, self.remote_addr))
+        self._update_connection()
+        return True
 
-        connection = NatConnection(self.sock, remote_addr)
-        print("Send hello packets to ", remote_addr)
-        self._send_hello_packets(connection)
-        print("Waiting for response at", connection.sock.getsockname())
+    def _update_connection(self):
+        if self.nat_connection:
+            self.nat_connection.close()
+        self.nat_connection = NatConnection(self.sock, self.remote_addr)
+
+    def _process_send_hello(self):
+        print("Send hello packets to", self.remote_addr)
+        for _ in range(const.HELLO_PACKETS_COUNT):
+            self.connection.send(const.HELLO_PACKET)
+        return True
+
+    def _process_wait_hello(self):
+        print("Waiting for response at", self.nat_connection.sock.getsockname())
         try:
             while True:
-                data = connection.recv_raw()
+                data = self.nat_connection.recv_raw()
                 if data == const.HELLO_PACKET:
                     print("Received hello packet!")
-                    self._send_hello_packets(connection)
-                    return connection
+                    return True
         except socket.timeout:
             print("No hello packet from remote")
         except ConnectionError as e:
             print("Connection error:", e)
-
-    def _send_hello_packets(self, connection):
-        for _ in range(const.HELLO_PACKETS_COUNT):
-            connection.send(const.HELLO_PACKET)
-
-    @staticmethod
-    def _rand_timeout():
-        return const.BASE_SOCKET_TIMEOUT * randrange(
-            int(const.TIMEOUT_MULTIPLIER_RANGE[0] * 100),
-            int(const.TIMEOUT_MULTIPLIER_RANGE[1] * 100)
-        ) / 100
 
     def _server_request(self):
         request = "\n".join(
