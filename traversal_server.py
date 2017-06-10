@@ -2,6 +2,7 @@ import socket
 import struct
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+from traceback import print_exc
 
 import constants as const
 from clientserver_connection import ClientServerConnection
@@ -12,7 +13,7 @@ class NATTraversalServer:
     def __init__(self):
         self.udp_listener = socket.socket(type=socket.SOCK_DGRAM)
         self.tcp_listener = socket.socket()
-        self.pool = ThreadPoolExecutor()
+        self.pool = ThreadPoolExecutor(const.SERVER_WORKERS)
         self.table = {}
         self.tcp_connections = {}
         self.connections_lock = Lock()
@@ -48,32 +49,42 @@ class NATTraversalServer:
         return socket.inet_aton(addr[0]) + struct.pack("!H", addr[1])
 
     def _process_tcp_connections(self):
-        self.tcp_listener.bind(("", const.PORT))
-        self.tcp_listener.listen(5)
-        while True:
-            sock, addr = self.tcp_listener.accept()
-            self.pool.submit(self._process_tcp_client, sock)
+        try:
+            self.tcp_listener.setsockopt(
+                socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.tcp_listener.bind(("", const.PORT))
+            self.tcp_listener.listen(5)
+            while True:
+                sock, addr = self.tcp_listener.accept()
+                self.pool.submit(self._process_tcp_client, sock)
+        except:
+            print_exc()
 
     def _process_tcp_client(self, sock):
-        sock.settimeout(const.OPERATION_TIMEOUT)
         try:
-            conn_a = ClientServerConnection(sock)
-            remote_id = conn_a.readline()
-            requested_id = conn_a.readline()
-            with self.connections_lock:
-                if requested_id not in self.tcp_connections:
-                    self.tcp_connections[remote_id] =\
-                        ClientServerConnection(sock)
-                    return
+            sock.settimeout(const.OPERATION_TIMEOUT)
+            try:
+                conn_a = ClientServerConnection(sock)
+                remote_id = conn_a.readline()
+                requested_id = conn_a.readline()
+                print("Connected {} waiting {}".format(remote_id, requested_id))
+                with self.connections_lock:
+                    if requested_id not in self.tcp_connections:
+                        self.tcp_connections[remote_id] =\
+                            ClientServerConnection(sock)
+                        return
 
-            conn_b = self.tcp_connections[requested_id]
-            del self.tcp_connections[requested_id]
-            if not self._traverse(conn_a, conn_b):
-                print("Hole punching between {} and {} failed".format(
-                    *self._get_remote_ips(conn_a, conn_b)
-                ))
-        except socket.timeout:
-            pass
+                conn_b = self.tcp_connections[requested_id]
+                del self.tcp_connections[requested_id]
+                print("Starting traverse...")
+                if not self._traverse(conn_a, conn_b):
+                    print("Hole punching between {} and {} failed".format(
+                        remote_id, requested_id
+                    ))
+            except socket.timeout:
+                pass
+        except:
+            print_exc()
 
     def _traverse(self, conn_a, conn_b):
         with conn_a, conn_b:
@@ -87,15 +98,20 @@ class NATTraversalServer:
         connections = [conn_a, conn_b]
         for conn in connections:
             conn.send_and_wait(Operation.BIND, OperationResult.OK)
-        for _ in range(2):
-            for conn in connections:
-                conn.send_and_wait(Operation.UPDATE_ADDR, OperationResult.OK)
+        for conn in connections:
+            conn.send_and_wait(Operation.ANNOUNCE_ADDR, OperationResult.OK)
+        for conn in connections:
+            conn.send_and_wait(Operation.UPDATE_ADDR, OperationResult.OK)
         for conn in connections:
             conn.send_and_wait(Operation.SEND_HELLO, OperationResult.OK)
 
         result = conn_a.send_and_recv(Operation.WAIT_HELLO, OperationResult)
         if result == OperationResult.OK:
-            print("Successfully hole punching from {} to {}".format(
+            conn_a.send_and_wait(Operation.SEND_HELLO, OperationResult.OK)
+            conn_b.send_and_wait(Operation.WAIT_HELLO, OperationResult.OK)
+            for conn in connections:
+                conn.write_as_enum(Operation.FINISH)
+            print("Successful hole punching from {} to {}".format(
                 *self._get_remote_ips(conn_a, conn_b)
             ))
             return True

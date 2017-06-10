@@ -10,10 +10,14 @@ class ClientServerConnection:
         self.sock.__exit__(*args)
 
     def readline(self):
-        return self.file.readline().replace("\n", "")
+        line = self.file.readline()
+        if not line:
+            raise EOFError()
+        return line.replace("\n", "")
 
     def writeline(self, line):
         self.file.write(line + "\n")
+        self.file.flush()
 
     def read_as_enum(self, enum_class):
         line = self.readline()

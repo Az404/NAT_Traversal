@@ -20,11 +20,13 @@ class NATTraversalClient:
         self.local_id = local_id
         self.remote_id = remote_id
         self.remote_addr = None
+        self.udp_sock = None
         self.nat_connection = None
         self._handlers = {
             Operation.BIND: self._process_bind,
             Operation.SEND_HELLO: self._process_send_hello,
             Operation.WAIT_HELLO: self._process_wait_hello,
+            Operation.ANNOUNCE_ADDR: self._process_announce,
             Operation.UPDATE_ADDR: self._process_update_addr
         }
 
@@ -38,24 +40,31 @@ class NATTraversalClient:
                     server_connection.writeline(self.remote_id)
                     while True:
                         operation = server_connection.read_as_enum(Operation)
+                        if operation == Operation.FINISH:
+                            return self.nat_connection
                         if operation in self._handlers:
                             result = self._handlers[operation]()
                             server_connection.write_as_enum(
                                 OperationResult.OK if result
                                 else OperationResult.FAIL
                             )
-                            if operation == Operation.WAIT_HELLO and result:
-                                return self.nat_connection
                         else:
                             print("Unknown operation from server")
-            except (socket.timeout, ConnectionError):
+            except (socket.timeout, ConnectionError, EOFError):
                 print("Connection attempt failed")
 
     def _process_bind(self):
-        self.sock = socket.socket(type=socket.SOCK_DGRAM)
-        self.sock.bind(("", 0))
-        print("Bind to {}".format(self.sock.getsockname()[0]))
+        if self.udp_sock:
+            self.udp_sock.close()
+        self.udp_sock = socket.socket(type=socket.SOCK_DGRAM)
+        self.udp_sock.bind(("", 0))
+        self.udp_sock.settimeout(const.BASE_SOCKET_TIMEOUT)
+        print("Bind to {}".format(self.udp_sock.getsockname()))
         self._update_connection()
+        return True
+
+    def _process_announce(self):
+        self._server_request()
         return True
 
     def _process_update_addr(self):
@@ -66,14 +75,12 @@ class NATTraversalClient:
         return True
 
     def _update_connection(self):
-        if self.nat_connection:
-            self.nat_connection.close()
-        self.nat_connection = NatConnection(self.sock, self.remote_addr)
+        self.nat_connection = NatConnection(self.udp_sock, self.remote_addr)
 
     def _process_send_hello(self):
         print("Send hello packets to", self.remote_addr)
         for _ in range(const.HELLO_PACKETS_COUNT):
-            self.connection.send(const.HELLO_PACKET)
+            self.nat_connection.send_raw(const.HELLO_PACKET)
         return True
 
     def _process_wait_hello(self):
@@ -93,10 +100,10 @@ class NATTraversalClient:
         request = "\n".join(
             (const.COOKIE.decode(), self.local_id, self.remote_id))
         for _ in range(const.SERVER_REQUEST_PROBES):
-            self.sock.sendto(request.encode(), (self.server_ip, const.PORT))
+            self.udp_sock.sendto(request.encode(), (self.server_ip, const.PORT))
             try:
                 while True:
-                    data, addr = self.sock.recvfrom(1024)
+                    data, addr = self.udp_sock.recvfrom(1024)
                     if addr[0] == self.server_ip:
                         break
                 return data

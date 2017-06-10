@@ -5,7 +5,9 @@ class Operation(Enum):
     SEND_HELLO = 0
     WAIT_HELLO = 1
     BIND = 2
-    UPDATE_ADDR = 3
+    ANNOUNCE_ADDR = 3
+    UPDATE_ADDR = 4
+    FINISH = 5
 
 
 class OperationResult(Enum):
