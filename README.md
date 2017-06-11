@@ -1,6 +1,6 @@
 # NAT_Traversal
 
-Утилита для установления UDP-соединения между двумя хостами за NAT.
+Утилита для установки UDP-соединения между двумя хостами за NAT.
 
 Использует алгоритм [UDP Hole Punching](https://en.wikipedia.org/wiki/UDP_hole_punching) с некоторыми модификациями.
 
