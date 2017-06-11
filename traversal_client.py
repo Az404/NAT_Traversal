@@ -1,4 +1,5 @@
 import argparse
+import re
 import socket
 import struct
 import uuid
@@ -6,8 +7,10 @@ from time import sleep
 
 import constants as const
 from clientserver_connection import ClientServerConnection
+from connections_repeater import ConnectionsRepeater
 from enums import Operation, OperationResult
 from nat_connection import NatConnection
+from udp_connection import UdpConnection
 
 
 class TraversalError(Exception):
@@ -58,12 +61,13 @@ class NATTraversalClient:
             self.udp_sock.close()
         self.udp_sock = socket.socket(type=socket.SOCK_DGRAM)
         self.udp_sock.bind(("", 0))
-        self.udp_sock.settimeout(const.BASE_SOCKET_TIMEOUT)
+        self.udp_sock.settimeout(const.UDP_SOCKET_TIMEOUT)
         print("Bind to {}".format(self.udp_sock.getsockname()))
         self._update_connection()
         return True
 
     def _process_announce(self):
+        print("Announce addr to server...")
         self._server_request()
         return True
 
@@ -137,32 +141,64 @@ def get_args():
         "-r", "--remote",
         required=True,
         help="remote id")
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument(
+        "-l", "--listen",
+        help="interface and port to listen (example: 0.0.0.0:1234)"
+    )
+    action.add_argument(
+        "-c", "--connect",
+        help="ip and port to connect (example: 127.0.0.1:1234)"
+    )
     return parser.parse_args()
 
 
-def send_and_recv(connection, string):
-    print("Send {} to remote...".format(string))
-    connection.send(string.encode())
-    try:
-        while True:
-            data = connection.recv()
-            print("Received {}".format(data.decode()))
-    except socket.timeout:
-        print("No data received")
+def get_server_connection(local_addr):
+    sock = socket.socket(type=socket.SOCK_DGRAM)
+    sock.bind(local_addr)
+    sock.settimeout(const.LOCAL_CONNECTION_TIMEOUT)
+    return UdpConnection(sock, recv_strict=False)
+
+
+def get_client_connection(remote_addr):
+    sock = socket.socket(type=socket.SOCK_DGRAM)
+    sock.settimeout(const.LOCAL_CONNECTION_TIMEOUT)
+    return UdpConnection(sock, remote_addr)
+
+
+def parse_hostport(address):
+    match = re.match("([\w.-]+):(\d+)", address)
+
+    if not match:
+        raise Exception(
+            "{} has wrong format (ip:port required)".format(address))
+
+    host, port = match.groups()
+    port = int(port)
+    return host, port
 
 
 def main():
     args = get_args()
-    print("MY ID:", args.id)
-    print("REMOTE ID:", args.remote)
-    client = NATTraversalClient(args.server, args.id, args.remote)
-    connection = client.connect()
-    print("OK!")
-    connection.keepalive_sender.start()
-    send_and_recv(connection, args.id)
-    while True:
-        msg = input("Message to send:")
-        send_and_recv(connection, msg)
+    if args.listen:
+        local_connection = get_server_connection(parse_hostport(args.listen))
+    else:
+        local_connection = get_client_connection(parse_hostport(args.connect))
+    with local_connection:
+        print("MY ID:", args.id)
+        print("REMOTE ID:", args.remote)
+        client = NATTraversalClient(args.server, args.id, args.remote)
+        nat_connection = client.connect()
+        print("NAT traversal completed!")
+        with nat_connection:
+            nat_connection.keepalive_sender.start()
+            repeater = ConnectionsRepeater(nat_connection, local_connection)
+            repeater.start()
+            try:
+                while True:
+                    sleep(1)
+            except KeyboardInterrupt:
+                repeater.stop()
 
 if __name__ == '__main__':
     main()

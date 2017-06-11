@@ -1,18 +1,18 @@
 from threading import Timer
 import constants as const
+from udp_connection import UdpConnection
 
 
-class NatConnection:
+class NatConnection(UdpConnection):
     def __init__(self, sock, remote_addr):
-        self.sock = sock
-        self.remote_addr = remote_addr
+        super().__init__(sock, remote_addr)
         self.keepalive_sender = KeepaliveSender(sock, remote_addr)
 
     def send(self, data):
         self.send_raw(self._escape(data))
 
     def send_raw(self, data):
-        self.sock.sendto(data, self.remote_addr)
+        super().send(data)
 
     def recv(self):
         while True:
@@ -21,10 +21,15 @@ class NatConnection:
                 return self._unescape(data)
 
     def recv_raw(self):
-        while True:
-            data, addr = self.sock.recvfrom(8192)
-            if addr == self.remote_addr:
-                return data
+        return super().recv()
+
+    def close(self):
+        self.keepalive_sender.cancel()
+        super().close()
+
+    def __exit__(self, *args):
+        self.keepalive_sender.cancel()
+        super().__exit__(*args)
 
     def _escape(self, data):
         if data.startswith(const.COOKIE) or data.startswith(b"\\"):
@@ -35,10 +40,6 @@ class NatConnection:
         if data.startswith(b"\\"):
             data = data[1:]
         return data
-
-    def close(self):
-        self.keepalive_sender.cancel()
-        self.sock.close()
 
 
 class KeepaliveSender(Timer):
