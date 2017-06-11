@@ -46,8 +46,14 @@ class NATTraversalClient:
                 print("Connection attempt failed", e)
 
     def _execute_commands_from_server(self):
-        server_connection = ClientServerConnection(
-            socket.create_connection((self.server_ip, const.PORT)))
+        try:
+            tcp_sock = socket.create_connection((self.server_ip, const.PORT))
+        except Exception:
+            raise TraversalError(
+                "Can't establish TCP connection with traversal server ({}:{})"
+                .format(self.server_ip, const.PORT))
+
+        server_connection = ClientServerConnection(tcp_sock)
         with server_connection:
             server_connection.writeline(self.local_id)
             server_connection.writeline(self.remote_id)
