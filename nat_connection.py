@@ -1,5 +1,7 @@
 from threading import Thread, Event
 
+from time import time
+
 import constants as const
 from udp_connection import UdpConnection
 
@@ -8,6 +10,7 @@ class NatConnection(UdpConnection):
     def __init__(self, sock, remote_addr):
         super().__init__(sock, remote_addr)
         self.keepalive_sender = KeepaliveSender(sock, remote_addr)
+        self._last_packet_time = time()
 
     def send(self, data):
         self.send_raw(self._escape(data))
@@ -18,6 +21,7 @@ class NatConnection(UdpConnection):
     def recv(self):
         while True:
             data = self.recv_raw()
+            self._last_packet_time = time()
             if not data.startswith(const.COOKIE):
                 return self._unescape(data)
 
@@ -27,6 +31,10 @@ class NatConnection(UdpConnection):
     def close(self):
         self.keepalive_sender.cancel()
         super().close()
+
+    @property
+    def active(self):
+        return time() - self._last_packet_time < const.DISCONNECT_TIMEOUT
 
     def __exit__(self, *args):
         self.keepalive_sender.cancel()

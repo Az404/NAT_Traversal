@@ -27,5 +27,5 @@ class ConnectionsRepeater:
         while not self.finished:
             try:
                 self.connections[idx_b].send(self.connections[idx_a].recv())
-            except (socket.timeout, ConnectionError):
+            except (socket.timeout, ConnectionError, OSError):
                 pass

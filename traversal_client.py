@@ -36,25 +36,33 @@ class NATTraversalClient:
     def connect(self):
         while True:
             try:
-                server_connection = ClientServerConnection(
-                    socket.create_connection((self.server_ip, const.PORT)))
-                with server_connection:
-                    server_connection.writeline(self.local_id)
-                    server_connection.writeline(self.remote_id)
-                    while True:
-                        operation = server_connection.read_as_enum(Operation)
-                        if operation == Operation.FINISH:
-                            return self.nat_connection
-                        if operation in self._handlers:
-                            result = self._handlers[operation]()
-                            server_connection.write_as_enum(
-                                OperationResult.OK if result
-                                else OperationResult.FAIL
-                            )
-                        else:
-                            print("Unknown operation from server")
-            except (socket.timeout, ConnectionError, EOFError):
-                print("Connection attempt failed")
+                self._execute_commands_from_server()
+                return self.nat_connection
+            except (socket.timeout,
+                    ConnectionError,
+                    EOFError,
+                    TimeoutError,
+                    TraversalError) as e:
+                print("Connection attempt failed", e)
+
+    def _execute_commands_from_server(self):
+        server_connection = ClientServerConnection(
+            socket.create_connection((self.server_ip, const.PORT)))
+        with server_connection:
+            server_connection.writeline(self.local_id)
+            server_connection.writeline(self.remote_id)
+            while True:
+                operation = server_connection.read_as_enum(Operation)
+                if operation == Operation.FINISH:
+                    return
+                if operation in self._handlers:
+                    result = self._handlers[operation]()
+                    server_connection.write_as_enum(
+                        OperationResult.OK if result
+                        else OperationResult.FAIL
+                    )
+                else:
+                    raise TraversalError("Unknown operation from server")
 
     def _process_bind(self):
         if self.udp_sock:
@@ -126,6 +134,18 @@ class NATTraversalClient:
             sleep(const.ADDR_WAIT_TIME)
 
 
+class ParseHostPortAction(argparse.Action):
+    def __call__(self, parser, args, values, option_string=None):
+        match = re.match("([\w.-]+):(\d+)", values)
+
+        if not match:
+            raise argparse.ArgumentError(
+                self, "{} has wrong format (host:port required)".format(values))
+
+        host, port = match.groups()
+        setattr(args, self.dest, (host, int(port)))
+
+
 def get_args():
     parser = argparse.ArgumentParser(
         description="Nat traversal client")
@@ -144,18 +164,20 @@ def get_args():
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument(
         "-l", "--listen",
-        help="interface and port to listen (example: 0.0.0.0:1234)"
+        type=int,
+        help="port to listen"
     )
     action.add_argument(
         "-c", "--connect",
-        help="ip and port to connect (example: 127.0.0.1:1234)"
+        action=ParseHostPortAction,
+        help="host and port to connect (example: 127.0.0.1:1234)"
     )
     return parser.parse_args()
 
 
-def get_server_connection(local_addr):
+def get_server_connection(port):
     sock = socket.socket(type=socket.SOCK_DGRAM)
-    sock.bind(local_addr)
+    sock.bind(("", port))
     sock.settimeout(const.LOCAL_CONNECTION_TIMEOUT)
     return UdpConnection(sock, recv_strict=False)
 
@@ -166,39 +188,36 @@ def get_client_connection(remote_addr):
     return UdpConnection(sock, remote_addr)
 
 
-def parse_hostport(address):
-    match = re.match("([\w.-]+):(\d+)", address)
-
-    if not match:
-        raise Exception(
-            "{} has wrong format (ip:port required)".format(address))
-
-    host, port = match.groups()
-    port = int(port)
-    return host, port
-
-
 def main():
     args = get_args()
+
+    print("MY ID:", args.id)
+    print("REMOTE ID:", args.remote)
+
     if args.listen:
-        local_connection = get_server_connection(parse_hostport(args.listen))
+        local_connection = get_server_connection(args.listen)
     else:
-        local_connection = get_client_connection(parse_hostport(args.connect))
-    with local_connection:
-        print("MY ID:", args.id)
-        print("REMOTE ID:", args.remote)
+        local_connection = get_client_connection(args.connect)
+
+    try:
         client = NATTraversalClient(args.server, args.id, args.remote)
-        nat_connection = client.connect()
-        print("NAT traversal completed!")
-        with nat_connection:
-            nat_connection.keepalive_sender.start()
-            repeater = ConnectionsRepeater(nat_connection, local_connection)
-            repeater.start()
-            try:
-                while True:
-                    sleep(1)
-            except KeyboardInterrupt:
-                repeater.stop()
+        while True:
+            nat_connection = client.connect()
+            print("NAT traversal completed!")
+            with nat_connection:
+                nat_connection.keepalive_sender.start()
+                repeater = ConnectionsRepeater(nat_connection, local_connection)
+                try:
+                    repeater.start()
+                    while nat_connection.active:
+                        sleep(1)
+                finally:
+                    repeater.stop()
+            print("NAT connection timeout, reconnecting...")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        local_connection.close()
 
 if __name__ == '__main__':
     main()

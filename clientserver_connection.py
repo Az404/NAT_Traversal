@@ -1,3 +1,6 @@
+from select import select
+
+
 class ClientServerConnection:
     def __init__(self, sock):
         self.sock = sock
@@ -10,6 +13,8 @@ class ClientServerConnection:
         self.sock.__exit__(*args)
 
     def readline(self):
+        while not select([self.sock], [], [], 1)[0]:
+            pass
         line = self.file.readline()
         if not line:
             raise EOFError()
