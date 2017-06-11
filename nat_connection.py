@@ -1,4 +1,5 @@
-from threading import Timer
+from threading import Thread, Event
+
 import constants as const
 from udp_connection import UdpConnection
 
@@ -42,11 +43,18 @@ class NatConnection(UdpConnection):
         return data
 
 
-class KeepaliveSender(Timer):
+class KeepaliveSender(Thread):
     def __init__(self, sock, remote_addr):
-        super().__init__(const.KEEPALIVE_SEND_TIME, self._send_keepalive)
+        super().__init__()
         self.sock = sock
         self.remote_addr = remote_addr
+        self.finished = Event()
 
-    def _send_keepalive(self):
-        self.sock.sendto(const.KEEPALIVE_PACKET, self.remote_addr)
+    def cancel(self):
+        self.finished.set()
+
+    def run(self):
+        while not self.finished.is_set():
+            self.finished.wait(const.KEEPALIVE_SEND_TIME)
+            if not self.finished.is_set():
+                self.sock.sendto(const.KEEPALIVE_PACKET, self.remote_addr)
